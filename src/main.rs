@@ -2,9 +2,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+mod capability;
+mod greywall;
 mod marginalia;
-mod quic_fetch;
 mod node;
+mod quic_fetch;
+mod yara;
 
 #[derive(Parser)]
 #[command(name = "web-browser", about = "QUIC-native browser with iroh P2P and marginalia.nu")]
@@ -34,6 +37,14 @@ enum Command {
     Peers,
     /// Onboarding: show what this browser is about
     Onboard,
+    /// Fetch URL through full greywall pipeline (marginalia gate → QUIC → YARA → capability)
+    SafeFetch {
+        url: String,
+    },
+    /// Scan a local file for suspicious content
+    Scan {
+        path: String,
+    },
 }
 
 #[tokio::main]
@@ -61,6 +72,94 @@ async fn main() -> Result<()> {
         Command::Onboard => {
             onboard().await?;
         }
+        Command::SafeFetch { url } => {
+            safe_fetch(&url).await?;
+        }
+        Command::Scan { path } => {
+            scan_file(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn safe_fetch(url: &str) -> Result<()> {
+    let parsed = url::Url::parse(url).context("invalid URL")?;
+    let domain = parsed.host_str().unwrap_or("unknown");
+
+    // 1. Greywall sandbox init
+    let cache_dir = std::env::temp_dir().join("web-browser-cache");
+    std::fs::create_dir_all(&cache_dir)?;
+    let sandbox = greywall::Sandbox::init(greywall::Policy::default(), cache_dir)?;
+    println!("[sandbox] {}", sandbox.policy_summary());
+
+    // 2. Domain gate
+    if !sandbox.check_domain(domain)? {
+        println!("[BLOCKED] domain '{}' not in allowlist", domain);
+        return Ok(());
+    }
+    println!("[sandbox] domain '{}' allowed", domain);
+
+    // 3. QUIC fetch
+    let client = reqwest::Client::builder()
+        .http3_prior_knowledge()
+        .user_agent("plurigrid-web-browser/0.1")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let resp = client.get(url).send().await.context("fetch failed")?;
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let body = resp.bytes().await?;
+    println!("[fetch] {} bytes, {}", body.len(), content_type);
+
+    // 4. YARA scan
+    let verdict = yara::scan(&body, &content_type);
+    match &verdict {
+        greywall::Verdict::Clean => println!("[scan] clean"),
+        greywall::Verdict::Suspicious(r) => println!("[scan] SUSPICIOUS: {}", r),
+        greywall::Verdict::Malicious(r) => println!("[scan] MALICIOUS: {}", r),
+    }
+
+    // 5. Capability gate
+    match capability::gate(&body, &verdict, false) {
+        Some(cap) => {
+            println!("[capability] {}", cap.summary());
+            if cap.permits(&capability::Permission::Render) {
+                let text = html2text::from_read(&body[..], 80);
+                println!("\n{}", text);
+            } else {
+                println!("[render blocked] insufficient capability");
+            }
+        }
+        None => {
+            println!("[BLOCKED] no capability granted — content is malicious");
+        }
+    }
+
+    sandbox.cleanup()?;
+    Ok(())
+}
+
+fn scan_file(path: &str) -> Result<()> {
+    let content = std::fs::read(path).context("failed to read file")?;
+    let file_type = yara::detect_type(&content);
+    println!("[type] {:?}", file_type);
+
+    let verdict = yara::scan(&content, "application/octet-stream");
+    match &verdict {
+        greywall::Verdict::Clean => println!("[scan] clean"),
+        greywall::Verdict::Suspicious(r) => println!("[scan] SUSPICIOUS: {}", r),
+        greywall::Verdict::Malicious(r) => println!("[scan] MALICIOUS: {}", r),
+    }
+
+    match capability::gate(&content, &verdict, false) {
+        Some(cap) => println!("[capability] {}", cap.summary()),
+        None => println!("[BLOCKED] no capability — malicious content"),
     }
 
     Ok(())
