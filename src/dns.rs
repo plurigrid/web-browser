@@ -25,6 +25,16 @@ fn default_allowlist() -> HashSet<String> {
     .collect()
 }
 
+/// Check if a domain would be allowed by the DNS filter (no network needed).
+pub fn is_domain_allowed(domain: &str) -> bool {
+    let allowed = default_allowlist();
+    let lower = domain.to_lowercase();
+    allowed.contains(&lower) || {
+        let parts: Vec<&str> = lower.split('.').collect();
+        (1..parts.len()).any(|i| allowed.contains(&parts[i..].join(".")))
+    }
+}
+
 /// Extract the queried domain name from a raw DNS packet.
 /// DNS name format: length-prefixed labels ending with 0x00, starting at byte 12.
 fn extract_query_name(packet: &[u8]) -> Option<String> {
@@ -162,5 +172,14 @@ mod tests {
         assert!(allowed.contains("api.marginalia.nu"));
         assert!(allowed.contains("relay.iroh.network"));
         assert!(!allowed.contains("google.com"));
+    }
+
+    #[test]
+    fn is_domain_allowed_works() {
+        assert!(is_domain_allowed("api.marginalia.nu"));
+        assert!(is_domain_allowed("API.MARGINALIA.NU")); // case insensitive
+        assert!(is_domain_allowed("relay.iroh.network"));
+        assert!(!is_domain_allowed("evil.com"));
+        assert!(!is_domain_allowed("google.com"));
     }
 }

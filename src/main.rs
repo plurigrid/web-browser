@@ -48,6 +48,8 @@ enum Command {
     },
     /// Run DNS filtering resolver (localhost:5353) for graywall integration
     Dns,
+    /// Run full daemon: DNS filter + iroh node (single process for graywall)
+    Daemon,
 }
 
 #[tokio::main]
@@ -84,6 +86,35 @@ async fn main() -> Result<()> {
         Command::Dns => {
             dns::run(None)?;
         }
+        Command::Daemon => {
+            daemon().await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn daemon() -> Result<()> {
+    println!("[daemon] starting DNS filter + iroh node\n");
+
+    // Spawn DNS filter on a blocking thread
+    let dns_handle = tokio::task::spawn_blocking(|| {
+        if let Err(e) = dns::run(None) {
+            eprintln!("[daemon] DNS filter error: {}", e);
+        }
+    });
+
+    // Run iroh node on async runtime
+    let node_handle = tokio::spawn(async {
+        if let Err(e) = node::run().await {
+            eprintln!("[daemon] iroh node error: {}", e);
+        }
+    });
+
+    // Wait for either to finish (Ctrl+C stops both)
+    tokio::select! {
+        _ = dns_handle => println!("[daemon] DNS filter stopped"),
+        _ = node_handle => println!("[daemon] iroh node stopped"),
     }
 
     Ok(())
@@ -93,6 +124,15 @@ async fn safe_fetch(url: &str) -> Result<()> {
     let parsed = url::Url::parse(url).context("invalid URL")?;
     let domain = parsed.host_str().unwrap_or("unknown");
 
+    // 0. DNS allowlist pre-check (no network needed — just check the list)
+    let dns_allowed = dns::is_domain_allowed(domain);
+    if !dns_allowed {
+        println!("[dns] BLOCKED — '{}' not in DNS allowlist", domain);
+        println!("[dns] this domain would get NXDOMAIN under graywall sandbox");
+        return Ok(());
+    }
+    println!("[dns] domain '{}' in allowlist", domain);
+
     // 1. Greywall sandbox init
     let cache_dir = std::env::temp_dir().join("web-browser-cache");
     std::fs::create_dir_all(&cache_dir)?;
@@ -101,7 +141,7 @@ async fn safe_fetch(url: &str) -> Result<()> {
 
     // 2. Domain gate
     if !sandbox.check_domain(domain)? {
-        println!("[BLOCKED] domain '{}' not in allowlist", domain);
+        println!("[BLOCKED] domain '{}' not in sandbox allowlist", domain);
         return Ok(());
     }
     println!("[sandbox] domain '{}' allowed", domain);
