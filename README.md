@@ -41,3 +41,35 @@ cargo run -- peers
 
 Content fetched via HTTP/3 (QUIC) is cached locally and can be shared peer-to-peer through iroh-blobs.
 Search uses marginalia.nu API — no Google, no tracking.
+
+## Security: Graywall Integration
+
+Run sandboxed with [graywall](https://github.com/plurigrid/graywall) (deny-by-default):
+
+```bash
+# Install greyproxy domain allowlist
+cp config/greyproxy-web-browser.json ~/.config/greyproxy/web-browser.json
+
+# Run sandboxed — only marginalia.nu + iroh relay allowed
+graywall -- cargo run -- safe-fetch https://www.marginalia.nu
+
+# Learn mode — discover what the browser actually needs
+graywall --learning -- cargo run -- onboard
+```
+
+The `safe-fetch` pipeline:
+
+```
+URL → marginalia pre-filter → QUIC fetch → BLAKE3 hash
+    → magic bytes + polyglot detection → YARA pattern scan
+    → capability gate (clean=render, suspicious=read-only, malicious=blocked)
+    → sandboxed render
+```
+
+```bash
+# Scan a local file
+cargo run -- scan suspicious.pdf
+
+# Safe fetch with full pipeline
+cargo run -- safe-fetch https://www.marginalia.nu
+```

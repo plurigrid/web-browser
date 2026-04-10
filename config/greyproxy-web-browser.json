@@ -1,0 +1,12 @@
+{
+  "// greyproxy domain allowlist for web-browser": "",
+  "// install: cp config/greyproxy-web-browser.json ~/.config/greyproxy/web-browser.json": "",
+  "rules": [
+    {"domain": "api.marginalia.nu", "action": "allow"},
+    {"domain": "www.marginalia.nu", "action": "allow"},
+    {"domain": "api.marginalia-search.com", "action": "allow"},
+    {"domain": "relay.iroh.network", "action": "allow"},
+    {"domain": "dns.iroh.network", "action": "allow"},
+    {"domain": "*", "action": "deny"}
+  ]
+}
