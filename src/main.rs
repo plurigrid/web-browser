@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
 mod capability;
+mod dns;
 mod greywall;
 mod marginalia;
 mod node;
@@ -45,6 +46,8 @@ enum Command {
     Scan {
         path: String,
     },
+    /// Run DNS filtering resolver (localhost:5353) for graywall integration
+    Dns,
 }
 
 #[tokio::main]
@@ -77,6 +80,9 @@ async fn main() -> Result<()> {
         }
         Command::Scan { path } => {
             scan_file(&path)?;
+        }
+        Command::Dns => {
+            dns::run(None)?;
         }
     }
 
